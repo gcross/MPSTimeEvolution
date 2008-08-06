@@ -3,6 +3,8 @@
 #@<< Import needed modules >>
 #@+node:gmc.20080805172037.48:<< Import needed modules >>
 from __future__ import division  # have division return a float by default, even between integers
+import __builtin__ # needed so we can invoke builting Python functions shadowed by NumPy functions with the same name
+
 from numpy import *
 from scipy.linalg import *
 #@-node:gmc.20080805172037.48:<< Import needed modules >>
@@ -14,8 +16,8 @@ from scipy.linalg import *
 # Construct matrices for the (unnormalized) Pauli operators.
 #@-at
 #@@c
-I = array([[1,0],[0,,1]])
-X = array([[0,1],[1,,0]])
+I = array([[1,0],[0,1]])
+X = array([[0,1],[1,0]])
 Y = array([[0,1j],[-1j,0]])
 Z = array([[1,0],[0,-1]])
 
@@ -41,80 +43,6 @@ class AllVectorsVanished(Exception):
 #@-node:gmc.20080805172037.74:AllVectorsVanished
 #@-others
 #@-node:gmc.20080805172037.73:Exceptions
-#@+node:gmc.20080805172037.49:Functions
-#@+others
-#@+node:gmc.20080805172037.72:merge_and_split
-def merge_and_split(A,A_index,B,B_index,compressed_dimension):
-    """Merge and split performs bond reduction between two tensors by merging them
-together and then splitting them apart using SVD.  You need to specify the two
-tensors, the indices along which they are joined, and the final (maximum) size of
-the bond.  (The routine may return tensors with a smaller bond, if some of the
-singular values vanish.)
-
-Usage:
-
-    A, lambda_, B = merge_and_split(A,A_index,B,B_index,compressed_dimension)
-"""
-
-    # Merge the two tensors together
-    AB = tensordot(A,B,(A_index,B_index))
-
-    # Reshape the merged tensor into a matrix
-    M = AB.reshape(prod(A.shape)/A.shape[A_index],prod(B.shape)/B.shape[B_index])
-
-    # Split them apart using SVD
-    u, s, v = svd(M,full_matrices=0,overwrite_a=1)
-
-    # Perform initial truncation
-    s = s[:compressed_dimension]
-
-    # Normalization
-    s /= s[0]
-
-    # Additionally, truncate all zero singular values
-    cutoff = 0
-    while cutoff < len(s) and abs(s[cutoff]) > 1e-14:
-        cutoff += 1
-
-    # If *all* the singular values were zero, then something is wrong.
-    if cutoff == 0:
-        raise AllVectorsVanished
-
-    # Truncate unwanted vectors/singular values
-    u = u[:,:cutoff]
-    s = s[:cutoff]
-    v = v[:cutoff,:].transpose()
-
-    def final_processing(m,M,M_index):
-        """Reshapes and transposes the tensor to return it to its original form."""
-        new_shape = list(M.shape)
-        del new_shape[M_index]
-        new_shape.append(cutoff)
-        new_indices = range(len(new_shape)-1)
-        new_indices.insert(M_index,len(new_shape)-1)
-
-        return m.reshape(new_shape).transpose(new_indices)
-
-    # Reshape and transpose tensors to return to their original form
-    new_u = final_processing(u,A,A_index)
-    new_v = final_processing(v,B,B_index)
-
-    # We're done!  Return the result.
-    return new_u, s, new_v
-
-
-#@-node:gmc.20080805172037.72:merge_and_split
-#@+node:gmc.20080806124136.5:multiply_tensor_by_matrix_at_index
-def multiply_tensor_by_matrix_at_index(tensor,matrix,index):
-    """This function dots the given matrix into the tensor at the given index,
-automatically taking care of rearranging the indices so that they end up the
-same order as when they started."""
-    tensor_new_indices = range(tensor.ndim-1)
-    tensor_new_indices.insert(index,tensor.ndim-1)
-    return tensordot(tensor,matrix,(index,0)).transpose(tensor_new_indices)
-#@-node:gmc.20080806124136.5:multiply_tensor_by_matrix_at_index
-#@-others
-#@-node:gmc.20080805172037.49:Functions
 #@+node:gmc.20080806124136.12:Contractors
 #@+at
 # This section of the code creates macros which performs various tensor
@@ -137,6 +65,13 @@ same order as when they started."""
 #@@c
 
 #@+others
+#@+node:gmc.20080806124136.24:n2l
+#@+at
+# Utility function converting numbers to letters.
+#@-at
+#@@c
+n2l = map(chr,range(ord('A'),ord('Z')+1))
+#@-node:gmc.20080806124136.24:n2l
 #@+node:gmc.20080806124136.6:make_contractor
 def make_contractor(tensor_index_labels,index_join_pairs,result_index_labels,name="f"):    # pre-process parameters
     tensor_index_labels = list(map(list,tensor_index_labels))
@@ -429,16 +364,297 @@ multiply_interior_site_tensor_by_operator_tensor = make_contractor_from_implicit
     [12,13,-1,1], # indices of the operator tensor
 ],[
     -1,
-    (2,12) # group together left auxiliary indices
-    (3,13) # group together right auxiliary indices
+    (2,12), # group together left auxiliary indices
+    (3,13)  # group together right auxiliary indices
 ])
 #@-node:gmc.20080806124136.15:multiply_interior_site_tensor_by_operator_tensor
 #@-others
 #@-node:gmc.20080806124136.16:Contractors for applying operators to sites
 #@+node:gmc.20080806124136.17:Contractors used in computing expected values
+#@+others
+#@+node:gmc.20080806124136.18:form_left_boundary
+#@+at
+# Forms the left boundary tensor used in computing expected values of 
+# operators.
+# 
+# S--2
+# |
+# 1
+# |
+# O--12
+# |
+# -1
+# |
+# S*-22
+# 
+# =
+#    2
+#   /
+#  /
+# N--12
+#  \
+#   \
+#    22
+# 
+#@-at
+#@@c
+
+_form_left_boundary = make_contractor_from_implicit_joins([
+    [1,2],     # indices of the site tensor
+    [12,-1,1], # indices of the operator tensor
+    [-1,22],   # indices of the conjugated tensor
+],[
+    2,
+    12,
+    22
+])
+
+def form_left_boundary(S,lambda_,O):
+    S = S*lambda_
+    return _form_left_boundary(S,O,S.conj())
+#@-node:gmc.20080806124136.18:form_left_boundary
+#@+node:gmc.20080806124136.19:absorb_interior_site_into_left_boundary
+#@+at
+# Absorbs the site tensor and operator at a site into the left boundary;
+# used in compute expected values of operators.
+# 
+# 
+#     -S--3
+#    / |
+#   2  1
+#  /   |
+# L-12-O--13
+#  \   |
+#   32 -1
+#    \ |
+#     -S*-23
+# 
+# =
+#    3
+#   /
+#  /
+# N--13
+#  \
+#   \
+#    23
+# 
+#@-at
+#@@c
+
+_absorb_interior_site_into_left_boundary = make_contractor_from_implicit_joins([
+    [2,12,22],    # indices of the left boundary tensor
+    [1,2,3],      # indices of the site tensor
+    [12,13,-1,1], # indices of the operator tensor
+    [-1,22,23],   # indices of the conjugated tensor
+],[
+    3,
+    13,
+    23
+])
+
+def absorb_interior_site_into_left_boundary(L,S,lambda_,O):
+    S = S*lambda_
+    return _absorb_interior_site_into_left_boundary(L,S,O,S.conj())
+#@-node:gmc.20080806124136.19:absorb_interior_site_into_left_boundary
+#@+node:gmc.20080806124136.20:merge_left_boundary_with_right_boundary
+#@+at
+# Finishes the expected value contraction merging the right boundary site
+# and operator tensor with the left boundary.
+# 
+# 
+#     -S
+#    / |
+#   2  1
+#  /   |
+# L-12-O
+#  \   |
+#   32 -1
+#    \ |
+#     -S*
+# 
+# =
+# 
+# N (scalar)
+# 
+#@-at
+#@@c
+
+_merge_left_boundary_with_right_boundary = make_contractor_from_implicit_joins([
+    [2,12,22],# indices of the left boundary tensor
+    [1,2],     # indices of the site tensor
+    [12,-1,1], # indices of the operator tensor
+    [-1,22],   # indices of the conjugated tensor
+],[()] # indicates that a scalar should be returned
+)
+
+def merge_left_boundary_with_right_boundary(L,S,O):
+    return _merge_left_boundary_with_right_boundary(L,S,O,S.conj())
+#@-node:gmc.20080806124136.20:merge_left_boundary_with_right_boundary
+#@-others
 #@-node:gmc.20080806124136.17:Contractors used in computing expected values
 #@-others
 #@-node:gmc.20080806124136.12:Contractors
+#@+node:gmc.20080805172037.49:Functions
+#@+others
+#@+node:gmc.20080805172037.72:merge_and_split
+def merge_and_split(A,A_index,B,B_index,compressed_dimension):
+    """Merge and split performs bond reduction between two tensors by merging them
+together and then splitting them apart using SVD.  You need to specify the two
+tensors, the indices along which they are joined, and the final (maximum) size of
+the bond.  (The routine may return tensors with a smaller bond, if some of the
+singular values vanish.)
+
+Usage:
+
+    A, lambda_, B = merge_and_split(A,A_index,B,B_index,compressed_dimension)
+"""
+
+    # Merge the two tensors together
+    AB = tensordot(A,B,(A_index,B_index))
+
+    # Reshape the merged tensor into a matrix
+    M = AB.reshape(prod(A.shape)/A.shape[A_index],prod(B.shape)/B.shape[B_index])
+
+    # Split them apart using SVD
+    u, s, v = svd(M,full_matrices=0,overwrite_a=1)
+
+    # Perform initial truncation
+    s = s[:compressed_dimension]
+
+    # Normalization
+    s /= s[0]
+
+    # Additionally, truncate all zero singular values
+    cutoff = 0
+    while cutoff < len(s) and abs(s[cutoff]) > 1e-14:
+        cutoff += 1
+
+    # If *all* the singular values were zero, then something is wrong.
+    if cutoff == 0:
+        raise AllVectorsVanished
+
+    # Truncate unwanted vectors/singular values
+    u = u[:,:cutoff]
+    s = s[:cutoff]
+    v = v[:cutoff,:].transpose()
+
+    def final_processing(m,M,M_index):
+        """Reshapes and transposes the tensor to return it to its original form."""
+        new_shape = list(M.shape)
+        del new_shape[M_index]
+        new_shape.append(cutoff)
+        new_indices = range(len(new_shape)-1)
+        new_indices.insert(M_index,len(new_shape)-1)
+
+        return m.reshape(new_shape).transpose(new_indices)
+
+    # Reshape and transpose tensors to return to their original form
+    new_u = final_processing(u,A,A_index)
+    new_v = final_processing(v,B,B_index)
+
+    # We're done!  Return the result.
+    return new_u, s, new_v
+
+
+#@-node:gmc.20080805172037.72:merge_and_split
+#@+node:gmc.20080806124136.5:multiply_tensor_by_matrix_at_index
+def multiply_tensor_by_matrix_at_index(tensor,matrix,index):
+    """This function dots the given matrix into the tensor at the given index,
+automatically taking care of rearranging the indices so that they end up the
+same order as when they started."""
+    tensor_new_indices = range(tensor.ndim-1)
+    tensor_new_indices.insert(index,tensor.ndim-1)
+    return tensordot(tensor,matrix,(index,0)).transpose(tensor_new_indices)
+#@-node:gmc.20080806124136.5:multiply_tensor_by_matrix_at_index
+#@+node:gmc.20080806124136.21:compute_expected_value
+def compute_expected_value(left_operator_tensor,interior_operator_tensor,right_operator_tensor):
+    left_boundary = form_left_boundary(site_tensors[0],lambdas[0],left_operator_tensor)
+    for i in xrange(1,number_of_sites-1):
+        left_boundary = absorb_interior_site_into_left_boundary(left_boundary,site_tensors[i],lambdas[i],interior_operator_tensor)
+    return merge_left_boundary_with_right_boundary(left_boundary,site_tensors[-1],right_operator_tensor)
+#@-node:gmc.20080806124136.21:compute_expected_value
+#@+node:gmc.20080806124136.22:compute_energy
+def compute_energy(J):
+
+    #@    << Build matrix product operator representation of the Hamiltonian >>
+    #@+node:gmc.20080806124136.23:<< Build matrix product operator representation of the Hamiltonian >>
+    J = final_J_value
+
+    #@+at
+    # The following is the matrix product operator representation of the 
+    # transverse Ising Hamiltonian.
+    # For a detailed discussion of how to do this for operators in general, 
+    # see arXiv:0708.1221,
+    # "Finite automata for caching in matrix product algorithms", Crosswhite & 
+    # Bacon.
+    # 
+    # At the left boundary, the finite state automaton can choose to output 
+    # either a I, an Z, or a -X.
+    # It does this, and sends a signal about its choice (respectively: 0, 1, 
+    # or 2) to the right.
+    #@-at
+    #@@c
+
+    left_hamiltonian_tensor = array([I,Z,-X])
+
+    #@+at
+    # At the right boundary, there are three posibilities, corresponding to 
+    # the following signals:
+    # 
+    #     0) no ZZ or X has been placed on my left, so place a -X here
+    #     1) a Z has been placed directly to my left, so put a -J*Z here
+    #     2) a ZZ or an X has been placed somewhere to the left, so put an I 
+    # here
+    #@-at
+    #@@c
+
+    right_hamiltonian_tensor = array([-X,-J*Z,I])
+
+    #@+at
+    # In the interior, the following input->output patterns are possible
+    # 
+    #     Input 0:  nothing but I's to the left;  make a choice
+    #     0->0 I
+    #     0->1 Z
+    #     0->2 -X
+    # 
+    #     Input 1:  a Z directly on my left;  no choice -- put a -J*Z here
+    #     1->2 -J*Z
+    # 
+    #     Input 2:  a ZZ or X somewhere on the left;  no choice -- put an I 
+    # here
+    #     2->2 I
+    # 
+    #@-at
+    #@@c
+
+    interior_hamiltonian_tensor = zeros((3,3,2,2),complex128)
+
+    interior_hamiltonian_tensor[0,0] = I
+    interior_hamiltonian_tensor[0,1] = Z
+    interior_hamiltonian_tensor[0,2] = -X
+
+    interior_hamiltonian_tensor[1,2] = -J*Z
+
+    interior_hamiltonian_tensor[2,2] = I
+    #@-node:gmc.20080806124136.23:<< Build matrix product operator representation of the Hamiltonian >>
+    #@nl
+
+    #@    << Built matrix product operator representation of the Identity >>
+    #@+node:gmc.20080806124136.25:<< Built matrix product operator representation of the Identity >>
+    left_identity_tensor = identity(2).reshape(1,2,2)
+    interior_identity_tensor = identity(2).reshape(1,1,2,2)
+    right_identity_tensor = identity(2).reshape(1,2,2)
+    #@-node:gmc.20080806124136.25:<< Built matrix product operator representation of the Identity >>
+    #@nl
+
+    energy = compute_expected_value(left_hamiltonian_tensor,interior_hamiltonian_tensor,right_hamiltonian_tensor)
+    normalizer = compute_expected_value(left_identity_tensor,interior_identity_tensor,right_identity_tensor)
+
+    return energy/normalizer
+#@-node:gmc.20080806124136.22:compute_energy
+#@-others
+#@-node:gmc.20080805172037.49:Functions
 #@-others
 
 #@<< Initialization >>
@@ -455,7 +671,7 @@ dt = 0.01
 # Number of time steps to take before increasing J to its next value.
 #@-at
 #@@c
-number_of_time_steps_per_J = 10
+number_of_time_steps_per_J = 1
 
 #@+at
 # Parameters describing how you want J to evolve.
@@ -475,7 +691,7 @@ number_of_sites = 10
 # The size to which bonds should be truncated.
 #@-at
 #@@c
-compressed_dimension = 2
+compressed_dimension = 8
 #@-node:gmc.20080805172037.78:<< Set parameters >>
 #@nl
 
@@ -489,8 +705,8 @@ compressed_dimension = 2
 # set to size 1.  They will grow automatically as we time evolve the system.
 #@-at
 #@@c
-site_tensors = [ones(2,1)] + [ones(2,1,1) for dummy in xrange(number_of_sites-2)] + [ones(2,1)]
-lambdas = [ones(1,1)] + [ones(1,1,1) for dummy in xrange(number_of_sites-2)]
+site_tensors = [ones((2,1))] + [ones((2,1,1)) for dummy in xrange(number_of_sites-2)] + [ones((2,1))]
+lambdas = [ones((1,1))] + [ones((1,1,1)) for dummy in xrange(number_of_sites-2)]
 #@-node:gmc.20080805172037.79:<< Build data structure for MPS >>
 #@nl
 #@-node:gmc.20080805172037.77:<< Initialization >>
@@ -498,6 +714,14 @@ lambdas = [ones(1,1)] + [ones(1,1,1) for dummy in xrange(number_of_sites-2)]
 
 #@<< Main loop >>
 #@+node:gmc.20080805172037.76:<< Main loop >>
+total_number_of_J_steps = int((final_J_value-initial_J_value)/J_step)
+counter = 0
+
+J = initial_J_value
+print "Start:  %f:%f" % (J,compute_energy(J))
+
+print "Performing adiabatic evolution..."
+
 #@+at
 # Note:  arange(X,Y) returns values including X but excluding Y;  this
 #        why I add 1e-10 to final_J_value -- to make sure that the right
@@ -630,7 +854,7 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
 
     interior_operator_tensor = array([
     [I*cos(dt),Z*cos(dt)],
-    [miZ*sin(dt),miI*sin(dt)]]
+    [miZ*sin(dt),miI*sin(dt)]
     ])
     #@-node:gmc.20080806124136.3:<< Construct tensors to apply ZZ unitary >>
     #@nl
@@ -650,7 +874,7 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     #@-at
     #@@c
 
-    expX = I*cos(t/2) - miX*sin(t/2)
+    expX = I*cos(dt/2) - miX*sin(dt/2)
 
     #@+at
     # Now we need to apply this operator to the left and right of the ZZ 
@@ -694,14 +918,14 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     # Apply the MPO to these site tensors.
     #@-at
     #@@c
-    site_tensors[0] = multiply_left_site_tensor_by_operator_tensor(site_tensor[0],left_operator_tensor)
-    site_tensors[1] = multiply_interior_site_tensor_by_operator_tensor(site_tensor[1],interior_operator_tensor)
+    site_tensors[0] = multiply_left_site_tensor_by_operator_tensor(site_tensors[0],left_operator_tensor)
+    site_tensors[1] = multiply_interior_site_tensor_by_operator_tensor(site_tensors[1],interior_operator_tensor)
 
     #@+at
     # Reduce the size of the bond between the two tensors.
     #@-at
     #@@c
-    site_tensors[0], lambda_, site_tensors[1] = merge_and_split(site_tensor[0],1,site_tensor[1],1,compressed_dimension)
+    site_tensors[0], lambda_, site_tensors[1] = merge_and_split(site_tensors[0],1,site_tensors[1],1,compressed_dimension)
 
     #@+at
     # Reshape the lambda so that it lines up with the correct index in
@@ -716,11 +940,11 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     # step-by-step commentary will not be repeated.
     #@-at
     #@@c
-    for i in xrange(1,number_of_sites-1):
+    for i in xrange(1,number_of_sites-2):
         site_tensors[i+1] *= lambdas[i+1]
-        site_tensors[i+1] = multiply_interior_site_tensor_by_operator_tensor(site_tensor[i+1],interior_operator_tensor)
-        site_tensors[i], lambda_, site_tensor[i+1] = merge_and_split(site_tensor[i],2,site_tensor[i+1],1,compressed_dimension)
-        lambdas[i] = lambda_.reshape(1,lambda_.shape[0],1)
+        site_tensors[i+1] = multiply_interior_site_tensor_by_operator_tensor(site_tensors[i+1],interior_operator_tensor)
+        site_tensors[i], lambda_, site_tensors[i+1] = merge_and_split(site_tensors[i],2,site_tensors[i+1],1,compressed_dimension)
+        lambdas[i] = lambda_.reshape(1,1,lambda_.shape[0])
 
     #@+at
     # Finally, we handle the right boundary.  Note that there is no lambda to 
@@ -728,14 +952,17 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     # of the right boundary, and hence we skip the lambda absorption step.
     #@-at
     #@@c
-    site_tensors[-1] = multiply_right_site_tensor_by_operator_tensor(site_tensor[i+1],right_operator_tensor)
-    site_tensors[-2], lambda_, site_tensors[-1] = merge_and_split(site_tensor[-2],2,site_tensor[-1],1,compressed_dimension)
-    lambdas[i] = lambda_.reshape(1,lambda_.shape[0],1)
-    #@nonl
+    site_tensors[-1] = multiply_right_site_tensor_by_operator_tensor(site_tensors[-1],right_operator_tensor)
+    site_tensors[-2], lambda_, site_tensors[-1] = merge_and_split(site_tensors[-2],2,site_tensors[-1],1,compressed_dimension)
+    lambdas[-1] = lambda_.reshape(1,1,lambda_.shape[0])
     #@-node:gmc.20080805172037.75:<< Apply unitary >>
     #@nl
+
+    if counter % (total_number_of_J_steps//10) == 0:
+        print "\t%i/%i %f:%f" % (counter,total_number_of_J_steps,J,compute_energy(J))
+    counter += 1
+
 #@-node:gmc.20080805172037.76:<< Main loop >>
 #@nl
-#@nonl
 #@-node:gmc.20080805172037.20:@thin time_evolution_transverse_ising.py
 #@-leo
