@@ -665,7 +665,7 @@ def compute_energy(J):
 # Length of time step
 #@-at
 #@@c
-dt = 0.001
+dt = 0.01
 
 #@+at
 # Number of time steps to take before increasing J to its next value.
@@ -678,14 +678,14 @@ number_of_time_steps_per_J = 1
 #@-at
 #@@c
 initial_J_value = 0
-final_J_value = 0.5
-J_step = 0.0001
+final_J_value = 1
+J_step = 0.001
 
 #@+at
 # Number of sites in the system.
 #@-at
 #@@c
-number_of_sites = 12
+number_of_sites = 8
 
 #@+at
 # The size to which bonds should be truncated.

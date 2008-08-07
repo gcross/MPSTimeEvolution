@@ -9,11 +9,9 @@
 <preferences/>
 <find_panel_settings/>
 <vnodes>
-<v t="gmc.20080806155822.2"><vh>@chapters</vh></v>
 <v t="gmc.20080805172037.20" a="E"
-expanded="gmc.20080806124136.13,gmc.20080806124136.16,gmc.20080806124136.17,gmc.20080805172037.49,gmc.20080806124136.22,gmc.20080805172037.77,gmc.20080805172037.76,"><vh>@thin time_evolution_transverse_ising.py</vh></v>
+expanded="gmc.20080806124136.13,gmc.20080806124136.16,gmc.20080806124136.17,gmc.20080805172037.80,"><vh>@thin time_evolution_transverse_ising.py</vh></v>
 </vnodes>
 <tnodes>
-<t tx="gmc.20080806155822.2"></t>
 </tnodes>
 </leo_file>
