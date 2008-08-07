@@ -16,10 +16,10 @@ from scipy.linalg import *
 # Construct matrices for the (unnormalized) Pauli operators.
 #@-at
 #@@c
-I = array([[1,0],[0,1]])
-X = array([[0,1],[1,0]])
-Y = array([[0,1j],[-1j,0]])
-Z = array([[1,0],[0,-1]])
+I = array([[1,0],[0,1]],complex128)
+X = array([[0,1],[1,0]],complex128)
+Y = array([[0,1j],[-1j,0]],complex128)
+Z = array([[1,0],[0,-1]],complex128)
 
 #@+at
 # For convenience and performance, we construct copies of the Pauli
@@ -524,9 +524,9 @@ Usage:
     # Normalization
     s /= s[0]
 
-    # Additionally, truncate all zero singular values
+    # Additionally, truncate all singular values close to zero
     cutoff = 0
-    while cutoff < len(s) and abs(s[cutoff]) > 1e-14:
+    while cutoff < len(s) and abs(s[cutoff]) > 1e-7:
         cutoff += 1
 
     # If *all* the singular values were zero, then something is wrong.
@@ -665,7 +665,7 @@ def compute_energy(J):
 # Length of time step
 #@-at
 #@@c
-dt = 0.01
+dt = 0.001
 
 #@+at
 # Number of time steps to take before increasing J to its next value.
@@ -678,20 +678,20 @@ number_of_time_steps_per_J = 1
 #@-at
 #@@c
 initial_J_value = 0
-final_J_value = 1
-J_step = 0.001
+final_J_value = 0.5
+J_step = 0.0001
 
 #@+at
 # Number of sites in the system.
 #@-at
 #@@c
-number_of_sites = 10
+number_of_sites = 12
 
 #@+at
 # The size to which bonds should be truncated.
 #@-at
 #@@c
-compressed_dimension = 8
+compressed_dimension = 16
 #@-node:gmc.20080805172037.78:<< Set parameters >>
 #@nl
 
@@ -705,8 +705,14 @@ compressed_dimension = 8
 # set to size 1.  They will grow automatically as we time evolve the system.
 #@-at
 #@@c
-site_tensors = [ones((2,1))] + [ones((2,1,1)) for dummy in xrange(number_of_sites-2)] + [ones((2,1))]
-lambdas = [ones((1,1))] + [ones((1,1,1)) for dummy in xrange(number_of_sites-2)]
+
+initial_state = array([1,1],complex128)
+
+site_tensors = [initial_state.copy().reshape(2,1)] \
+             + [initial_state.copy().reshape(2,1,1) for dummy in xrange(number_of_sites-2)] \
+             + [initial_state.copy().reshape(2,1)]
+
+lambdas = [ones((1,1),complex128)] + [ones((1,1,1),complex128) for dummy in xrange(number_of_sites-2)]
 #@-node:gmc.20080805172037.79:<< Build data structure for MPS >>
 #@nl
 #@-node:gmc.20080805172037.77:<< Initialization >>
@@ -756,31 +762,31 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     #@+at
     # To understand what is going on here, recall that
     # 
-    #     exp(i t Z_1 Z_2) = exp(i t diag(+1,-1,-1,+1)
-    #                      = diag(exp(+it),exp(-it),exp(-it),exp(+it))
-    #                      = I_1 I_2 cos(t) + i Z_1 Z_2 sin(t)
+    #     exp(-it Z_1 Z_2) = exp(-it diag(+1,-1,-1,+1))
+    #                      = diag(exp(-it),exp(+it),exp(+it),exp(-it))
+    #                      = I_1 I_2 cos(t) - i Z_1 Z_2 sin(t)
     # 
     # Therefore, since the Z operators commute with each other,
     # 
     #     exp(sum_k i t Z_k Z_{k+1}) =
-    #             prod_k (I_k I_{k+1} cos(t) + i Z_k Z_{k_1} sin(t))
+    #             prod_k (I_k I_{k+1} cos(t) - i Z_k Z_{k_1} sin(t))
     # 
     # Note that for each term, each site has a product of two operators:
     # one from k=n-1, and one from k=n.  Thus, depending on whether the
     # I_k I_{k+1} or the Z_k Z_{k+1} terms are chosen in these two factors,
     # there are four possible local operators that could appear at site n:
     # 
-    #  I_n cos(t) (I_n chosen at both n-1 and n)
-    # iI_n sin(t) (Z_n chosen at both n-1 and n)
-    #  Z_n cos(t) (Z_n chosen at n-1, I_n chosen at n)
-    # iZ_n sin(t) (I_n chosen at n-1, Z_n chosen at n)
+    #   I_n cos(t) (I_n chosen at both n-1 and n)
+    # -iI_n sin(t) (Z_n chosen at both n-1 and n)
+    #   Z_n cos(t) (Z_n chosen at n-1, I_n chosen at n)
+    # -iZ_n sin(t) (I_n chosen at n-1, Z_n chosen at n)
     # 
     # Note that we have adopted the convention that the cos/sin will be
     # associated with the *right* of the two operators -- i.e., we have
     # expressed the sum above in the form
     # 
     #     exp(sum_k i t Z_k Z_{k+1}) =
-    #             prod_k (I_k (I_{k+1} cos(t)) + i Z_k (Z_{k_1} sin(t)))
+    #             prod_k (I_k (I_{k+1} cos(t)) + Z_k (-iZ_{k_1} sin(t)))
     # 
     # (Observe the parantheses grouping the sin/cos with hte second operator.)
     # 
@@ -790,23 +796,18 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     # the right to tell its neighbor that it needs to multiply itself by
     # the second of these operators.  Likewise, this site receives a signal
     # from its left neighbor and based on that multiplies its choice of I or
-    # Z with its left neighbors choice of either I cos(t) or iZ sin(t).
+    # Z with its left neighbors choice of either I cos(t) or -iZ sin(t).
     # 
     # On the left boundary, only a choice is made and I or Z placed.
     # 
     # On the right boundary, no choice is made;  it places either I cos(t)
-    # or iZ sin(t) based on the choice of its neighbor.
+    # or -iZ sin(t) based on the choice of its neighbor.
     # 
     # I use the signal 0 to indicate that an I was chosen, and the signal 1
     # to indicate that a Z was chosen.
     # 
     # So, having explained all that, we shall now construct the matrix product
-    # operator representation of exp(sum_k -i t Z_k Z_{k+1}).  (Note the 
-    # addition
-    # of the minus sign, which has the effect of replacing i with (-i) 
-    # everywhere
-    # in the above derivation.)
-    # 
+    # operator representation of exp(sum_k -it Z_k Z_{k+1}).
     # First, the left boundary which makes a choice, placing either an I or a 
     # Z,
     # and then sends a signal to its right.  Specifically, we set up the
@@ -835,7 +836,7 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     #@-at
     #@@c
 
-    right_operator_tensor = array([I*cos(dt),miZ*sin(dt)])
+    right_operator_tensor = array([I*cos(J*dt),miZ*sin(J*dt)])
 
     #@+at
     # Finally, we construct the interior tensors, which receives a signal from
@@ -853,8 +854,8 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     #@@c
 
     interior_operator_tensor = array([
-    [I*cos(dt),Z*cos(dt)],
-    [miZ*sin(dt),miI*sin(dt)]
+    [I*cos(J*dt),Z*cos(J*dt)],
+    [miZ*sin(J*dt),miI*sin(J*dt)]
     ])
     #@-node:gmc.20080806124136.3:<< Construct tensors to apply ZZ unitary >>
     #@nl
@@ -863,7 +864,7 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     #@+node:gmc.20080806124136.4:<< Multiply by operators which apply the X unitary >>
     #@+at
     # At this point, we now have operator tensors which perform the unitary 
-    # exp(iZZ).
+    # exp(-iZZ).
     # Obviously, we are not done yet since we still have to apply exp(-iX/2) 
     # on both
     # sides.  Recall that
@@ -874,7 +875,7 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     #@-at
     #@@c
 
-    expX = I*cos(dt/2) - miX*sin(dt/2)
+    expX = I*cos(dt/2) + miX*sin(dt/2)
 
     #@+at
     # Now we need to apply this operator to the left and right of the ZZ 
@@ -900,68 +901,69 @@ for J in arange(initial_J_value,final_J_value+1e-10,J_step):
     #@-node:gmc.20080805172037.80:<< Build MPO >>
     #@nl
 
-    #@    << Apply unitary >>
-    #@+node:gmc.20080805172037.75:<< Apply unitary >>
-    #@+at
-    # The tensors at the boundaries are a special case, so we handle them 
-    # separately.
-    # 
-    # First, absorb the lambdas into the site tensors.  Note that the lambdas 
-    # are
-    # assumed to be shaped so that they get multiplied into the correct index.
-    #@-at
-    #@@c
-    site_tensors[0] *= lambdas[0]
-    site_tensors[1] *= lambdas[1]
+    for dummy in xrange(number_of_time_steps_per_J):
+        #@        << Apply unitary >>
+        #@+node:gmc.20080805172037.75:<< Apply unitary >>
+        #@+at
+        # The tensors at the boundaries are a special case, so we handle them 
+        # separately.
+        # 
+        # First, absorb the lambdas into the site tensors.  Note that the 
+        # lambdas are
+        # assumed to be shaped so that they get multiplied into the correct 
+        # index.
+        #@-at
+        #@@c
+        site_tensors[0] *= lambdas[0]
+        site_tensors[1] *= lambdas[1]
 
-    #@+at
-    # Apply the MPO to these site tensors.
-    #@-at
-    #@@c
-    site_tensors[0] = multiply_left_site_tensor_by_operator_tensor(site_tensors[0],left_operator_tensor)
-    site_tensors[1] = multiply_interior_site_tensor_by_operator_tensor(site_tensors[1],interior_operator_tensor)
+        #@+at
+        # Apply the MPO to these site tensors.
+        #@-at
+        #@@c
+        site_tensors[0] = multiply_left_site_tensor_by_operator_tensor(site_tensors[0],left_operator_tensor)
+        site_tensors[1] = multiply_interior_site_tensor_by_operator_tensor(site_tensors[1],interior_operator_tensor)
 
-    #@+at
-    # Reduce the size of the bond between the two tensors.
-    #@-at
-    #@@c
-    site_tensors[0], lambda_, site_tensors[1] = merge_and_split(site_tensors[0],1,site_tensors[1],1,compressed_dimension)
+        #@+at
+        # Reduce the size of the bond between the two tensors.
+        #@-at
+        #@@c
+        site_tensors[0], lambda_, site_tensors[1] = merge_and_split(site_tensors[0],1,site_tensors[1],1,compressed_dimension)
 
-    #@+at
-    # Reshape the lambda so that it lines up with the correct index in
-    # site_tensor[0].
-    #@-at
-    #@@c
-    lambdas[0] = lambda_.reshape(1,lambda_.shape[0])
+        #@+at
+        # Reshape the lambda so that it lines up with the correct index in
+        # site_tensor[0].
+        #@-at
+        #@@c
+        lambdas[0] = lambda_.reshape(1,lambda_.shape[0])
 
-    #@+at
-    # Now we handle the interior tensors.  This is essentially the same idea 
-    # as before, so
-    # step-by-step commentary will not be repeated.
-    #@-at
-    #@@c
-    for i in xrange(1,number_of_sites-2):
-        site_tensors[i+1] *= lambdas[i+1]
-        site_tensors[i+1] = multiply_interior_site_tensor_by_operator_tensor(site_tensors[i+1],interior_operator_tensor)
-        site_tensors[i], lambda_, site_tensors[i+1] = merge_and_split(site_tensors[i],2,site_tensors[i+1],1,compressed_dimension)
-        lambdas[i] = lambda_.reshape(1,1,lambda_.shape[0])
+        #@+at
+        # Now we handle the interior tensors.  This is essentially the same 
+        # idea as before, so
+        # step-by-step commentary will not be repeated.
+        #@-at
+        #@@c
+        for i in xrange(1,number_of_sites-2):
+            site_tensors[i+1] *= lambdas[i+1]
+            site_tensors[i+1] = multiply_interior_site_tensor_by_operator_tensor(site_tensors[i+1],interior_operator_tensor)
+            site_tensors[i], lambda_, site_tensors[i+1] = merge_and_split(site_tensors[i],2,site_tensors[i+1],1,compressed_dimension)
+            lambdas[i] = lambda_.reshape(1,1,lambda_.shape[0])
 
-    #@+at
-    # Finally, we handle the right boundary.  Note that there is no lambda to 
-    # the right
-    # of the right boundary, and hence we skip the lambda absorption step.
-    #@-at
-    #@@c
-    site_tensors[-1] = multiply_right_site_tensor_by_operator_tensor(site_tensors[-1],right_operator_tensor)
-    site_tensors[-2], lambda_, site_tensors[-1] = merge_and_split(site_tensors[-2],2,site_tensors[-1],1,compressed_dimension)
-    lambdas[-1] = lambda_.reshape(1,1,lambda_.shape[0])
-    #@-node:gmc.20080805172037.75:<< Apply unitary >>
-    #@nl
+        #@+at
+        # Finally, we handle the right boundary.  Note that there is no lambda 
+        # to the right
+        # of the right boundary, and hence we skip the lambda absorption step.
+        #@-at
+        #@@c
+        site_tensors[-1] = multiply_right_site_tensor_by_operator_tensor(site_tensors[-1],right_operator_tensor)
+        site_tensors[-2], lambda_, site_tensors[-1] = merge_and_split(site_tensors[-2],2,site_tensors[-1],1,compressed_dimension)
+        lambdas[-1] = lambda_.reshape(1,1,lambda_.shape[0])
+        #@-node:gmc.20080805172037.75:<< Apply unitary >>
+        #@nl
 
     if counter % (total_number_of_J_steps//10) == 0:
         print "\t%i/%i %f:%f" % (counter,total_number_of_J_steps,J,compute_energy(J))
     counter += 1
-
 #@-node:gmc.20080805172037.76:<< Main loop >>
 #@nl
 #@-node:gmc.20080805172037.20:@thin time_evolution_transverse_ising.py
